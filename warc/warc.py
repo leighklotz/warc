@@ -322,33 +322,36 @@ class WARCReader:
         self.current_payload = None
         
     def read_header(self, fileobj):
+        before = fileobj.tell()
         version_line = fileobj.readline()
         if not version_line:
             return None
             
         m = self.RE_VERSION.match(version_line)
         if not m:
-            raise IOError("Bad version line: %r" % version_line)
+            raise IOError("At byte range %d-%d: Bad version line: %r" % (before, fileobj.tell(), version_line))
         version = m.group(1)
         if version not in self.SUPPORTED_VERSIONS:
-            raise IOError("Unsupported WARC version: %s" % version)
+            raise IOError("At byte range %d-%d: Unsupported WARC version: %s" % (before, fileobj.tell(), version))
             
         headers = {}
         while True:
+            before = fileobj.tell()
             line = fileobj.readline()
             if line == "\r\n": # end of headers
                 break
             m = self.RE_HEADER.match(line)
             if not m:
-                raise IOError("Bad header line: %r" % line)
+                raise IOError("At byte range %d-%d: Bad header line: %r" % (before, fileobj.tell(), line))
             name, value = m.groups()
             headers[name] = value
         return WARCHeader(headers)
         
     def expect(self, fileobj, expected_line, message=None):
+        before = fileobj.tell()
         line = fileobj.readline()
         if line != expected_line:
-            message = message or "Expected %r, found %r" % (expected_line, line)
+            message = message or "At byte range %d-%d: Expected %r, found %r" % (before, fileobj.tell(), expected_line, line)
             raise IOError(message)
             
     def finish_reading_current_record(self):

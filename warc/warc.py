@@ -66,8 +66,9 @@ class WARCHeader(CaseInsensitiveDict):
         "content_length": "Content-Length"
     }
                             
-    def __init__(self, headers, defaults=False):
+    def __init__(self, headers, defaults=False, line_ending='\r\n'):
         self.version = "WARC/1.0"
+        self.line_ending = line_ending
         CaseInsensitiveDict.__init__(self, headers)
         if defaults:
             self.init_defaults()
@@ -90,7 +91,8 @@ class WARCHeader(CaseInsensitiveDict):
     def write_to(self, f):
         """Writes this header to a file, in the format specified by WARC.
         """
-        f.write(self.version + "\r\n")
+        f.write(self.version)
+        f.write(self.line_ending)
         for name, value in self.items():
             name = name.title()
             # Use standard forms for commonly used patterns
@@ -98,10 +100,10 @@ class WARCHeader(CaseInsensitiveDict):
             f.write(name)
             f.write(": ")
             f.write(value)
-            f.write("\r\n")
+            f.write(self.line_ending)
         
         # Header ends with an extra CRLF
-        f.write("\r\n")
+        f.write(self.line_ending)
 
     @property
     def content_length(self):
@@ -134,14 +136,16 @@ class WARCHeader(CaseInsensitiveDict):
 class WARCRecord(object):
     """The WARCRecord object represents a WARC Record.
     """
-    def __init__(self, header=None, payload=None,  headers={}, defaults=True):
+    def __init__(self, header=None, payload=None,  headers={}, defaults=True, line_ending = '\r\n'):
         """Creates a new WARC record. 
         """
+
+        self.line_ending = line_ending
 
         if header is None and defaults is True:
             headers.setdefault("WARC-Type", "response")
 
-        self.header = header or WARCHeader(headers, defaults=True)
+        self.header = header or WARCHeader(headers, defaults=True, line_ending=self.line_ending)
         self.payload = payload
         
         if defaults is True and 'Content-Length' not in self.header:
@@ -159,8 +163,8 @@ class WARCRecord(object):
     def write_to(self, f):
         self.header.write_to(f)
         f.write(self.payload)
-        f.write("\r\n")
-        f.write("\r\n")
+        f.write(self.line_ending)
+        f.write(self.line_ending)
         f.flush()
         
     @property
@@ -233,13 +237,13 @@ class WARCRecord(object):
         response.raw._fp = StringIO(body)
 
         # Build the payload to create warc file.
-        payload = status_line + "\r\n" + headers + "\r\n" + body
+        payload = status_line + self.line_ending + headers + line_ending + body
         
         headers = {
             "WARC-Type": "response",
             "WARC-Target-URI": response.request.full_url.encode('utf-8')
         }
-        return WARCRecord(payload=payload, headers=headers)
+        return WARCRecord(payload=payload, headers=headers, line_ending=self.line_ending)
 
 class WARCFile:
     def __init__(self, filename=None, mode=None, fileobj=None, compress=None):
@@ -313,13 +317,18 @@ class WARCFile:
             return self.fileobj.tell()            
     
 class WARCReader:
-    RE_VERSION = re.compile("WARC/(\d+.\d+)\r\n")
-    RE_HEADER = re.compile(r"([a-zA-Z_\-]+): *(.*)\r\n")
+    RE_VERSION_CR_LF = re.compile(r"WARC/(\d+.\d+)\r\n")
+    RE_VERSION_LF = re.compile(r"WARC/(\d+.\d+)\n")
+    RE_HEADER_CR_LF = re.compile(r"([a-zA-Z_\-]+): *(.*)\r\n")
+    RE_HEADER_LF = re.compile(r"([a-zA-Z_\-]+): *(.*)\n")
     SUPPORTED_VERSIONS = ["1.0"]
     
     def __init__(self, fileobj):
         self.fileobj = fileobj
         self.current_payload = None
+        self.line_ending = None
+        self.re_version = None
+        self.re_header = None
         
     def read_header(self, fileobj):
         before = fileobj.tell()
@@ -327,9 +336,20 @@ class WARCReader:
         if not version_line:
             return None
             
-        m = self.RE_VERSION.match(version_line)
+        if self.re_version is None:
+            if self.RE_VERSION_CR_LF.match(version_line):
+                self.re_version = self.RE_VERSION_CR_LF
+                self.re_header = self.RE_HEADER_CR_LF
+                self.line_ending = '\r\n'
+            elif self.RE_VERSION_LF.match(version_line):
+                self.re_version = self.RE_VERSION_LF
+                self.re_header = self.RE_HEADER_LF
+                self.line_ending = '\n'
+            else:
+                raise IOError("At byte range %d-%d: Version line is neither CR_LF nor LF terminated: %r" % (before, fileobj.tell(), version_line))
+        m = self.re_version.match(version_line)
         if not m:
-            raise IOError("At byte range %d-%d: Bad version line: %r" % (before, fileobj.tell(), version_line))
+            raise IOError("At byte range %d-%d: Bad version line: %r: expected match for %s" % (before, fileobj.tell(), version_line, self.re_version.pattern))
         version = m.group(1)
         if version not in self.SUPPORTED_VERSIONS:
             raise IOError("At byte range %d-%d: Unsupported WARC version: %s" % (before, fileobj.tell(), version))
@@ -338,14 +358,14 @@ class WARCReader:
         while True:
             before = fileobj.tell()
             line = fileobj.readline()
-            if line == "\r\n": # end of headers
+            if line == self.line_ending: # end of headers
                 break
-            m = self.RE_HEADER.match(line)
+            m = self.re_header.match(line)
             if not m:
                 raise IOError("At byte range %d-%d: Bad header line: %r" % (before, fileobj.tell(), line))
             name, value = m.groups()
             headers[name] = value
-        return WARCHeader(headers)
+        return WARCHeader(headers, line_ending=self.line_ending)
         
     def expect(self, fileobj, expected_line, message=None):
         before = fileobj.tell()
@@ -359,8 +379,8 @@ class WARCReader:
         if self.current_payload:
             # consume all data from the current_payload before moving to next record
             self.current_payload.read()
-            self.expect(self.current_payload.fileobj, "\r\n")
-            self.expect(self.current_payload.fileobj, "\r\n")
+            self.expect(self.current_payload.fileobj, self.line_ending)
+            self.expect(self.current_payload.fileobj, self.line_ending)
             self.current_payload = None
 
     def read_record(self):
@@ -378,7 +398,7 @@ class WARCReader:
             return None
         
         self.current_payload = FilePart(fileobj, header.content_length)
-        record = WARCRecord(header, self.current_payload, defaults=False)
+        record = WARCRecord(header, self.current_payload, defaults=False, line_ending=self.line_ending)
         return record
 
     def _read_payload(self, fileobj, content_length):

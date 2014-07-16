@@ -384,6 +384,12 @@ class ARCFile(object):
     def close(self):
         self.fileobj.close()
         
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.close()
+
         
         
         

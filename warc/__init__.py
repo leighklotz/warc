@@ -21,7 +21,7 @@ def detect_format(filename):
 
     return "unknown"
 
-def open(filename, mode="rb", format = None):
+def open(filename, mode="rb", format = None, lax_line_endings = False):
     """Shorthand for WARCFile(filename, mode).
 
     Auto detects file and opens it.
@@ -31,7 +31,7 @@ def open(filename, mode="rb", format = None):
         format = detect_format(filename)
 
     if format == "warc":
-        return WARCFile(filename, mode)
+        return WARCFile(filename, mode, lax_line_endings = lax_line_endings)
     elif format == "arc":
         return ARCFile(filename, mode)
     else:

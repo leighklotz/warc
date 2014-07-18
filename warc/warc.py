@@ -246,7 +246,7 @@ class WARCRecord(object):
         return WARCRecord(payload=payload, headers=headers, line_ending=self.line_ending)
 
 class WARCFile:
-    def __init__(self, filename=None, mode=None, fileobj=None, compress=None):
+    def __init__(self, filename=None, mode=None, fileobj=None, compress=None, lax_line_endings=False):
         if fileobj is None:
             fileobj = __builtin__.open(filename, mode or "rb")
             mode = fileobj.mode
@@ -258,12 +258,13 @@ class WARCFile:
             fileobj = gzip2.GzipFile(fileobj=fileobj, mode=mode)
         
         self.fileobj = fileobj
+        self.lax_line_endings = lax_line_endings
         self._reader = None
         
     @property
     def reader(self):
         if self._reader is None:
-            self._reader = WARCReader(self.fileobj)
+            self._reader = WARCReader(self.fileobj, lax_line_endings=self.lax_line_endings)
         return self._reader
     
     def write_record(self, warc_record):
@@ -329,12 +330,13 @@ class WARCReader:
     RE_HEADER_LF = re.compile(r"([a-zA-Z_\-]+): *(.*)\n")
     SUPPORTED_VERSIONS = ["1.0"]
     
-    def __init__(self, fileobj):
+    def __init__(self, fileobj, lax_line_endings=False):
         self.fileobj = fileobj
         self.current_payload = None
         self.line_ending = None
         self.re_version = None
         self.re_header = None
+        self.lax_line_endings = lax_line_endings
         
     def read_header(self, fileobj):
         before = fileobj.tell()
@@ -343,7 +345,7 @@ class WARCReader:
             return None
             
         if self.re_version is None:
-            if self.RE_VERSION_CR_LF.match(version_line):
+            if (not self.lax_line_endings) or self.RE_VERSION_CR_LF.match(version_line):
                 self.re_version = self.RE_VERSION_CR_LF
                 self.re_header = self.RE_HEADER_CR_LF
                 self.line_ending = '\r\n'
@@ -353,6 +355,7 @@ class WARCReader:
                 self.line_ending = '\n'
             else:
                 raise IOError("At byte range %d-%d: Version line is neither CR_LF nor LF terminated: %r" % (before, fileobj.tell(), version_line))
+
         m = self.re_version.match(version_line)
         if not m:
             raise IOError("At byte range %d-%d: Bad version line: %r: expected match for %s" % (before, fileobj.tell(), version_line, self.re_version.pattern))
